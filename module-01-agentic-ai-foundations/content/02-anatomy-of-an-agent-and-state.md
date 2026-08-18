@@ -62,7 +62,7 @@ According to OpenAI's *A Practical Guide to Building Agents*, an agent system is
 2. **Instructions:** The behavioral specification, system prompt, operational constraints, and domain policies that guide model execution.
 3. **Tools:** Callable functions, APIs, databases, or code execution environments that grant the model capabilities beyond pure text generation.
 
-In addition, an agent is activated by a **Goal / Task**—the high-level prompt or objective supplied by the user or upstream system.
+The agent is activated by a **Goal / Task**—the external prompt, user query, or system objective that the agent is invoked to accomplish.
 
 ```mermaid
 flowchart LR
@@ -83,8 +83,9 @@ flowchart LR
 ```
 
 ### Why an LLM Application Isn't Automatically an Agent
+While the industry uses "agent" in multiple ways (as noted in Anthropic's *Building Effective Agents*), this course maintains a clear architectural boundary:
 * **LLM Application:** Developer code dictates the entire control flow. The model is called as an isolated text transformation function (e.g., classifying a ticket). The model has no control over what execution path is chosen next.
-* **LLM Agent:** The model is placed inside an iterative loop (`Agent → Runner → run`) where its output directly determines whether to invoke tools, query systems, ask clarifying questions, or terminate. The model **dynamically influences its own execution trajectory**.
+* **LLM Agent:** The model is placed inside an iterative loop (`Agent → Runner → run`) where the model dynamically influences the execution trajectory by producing decisions or tool requests that the runtime interprets and executes, continuing iteratively until termination.
 
 ---
 
@@ -94,12 +95,12 @@ To bridge classical AI theory with modern LLM engineering, this course provides 
 
 > [!NOTE]
 > **Pedagogical Synthesis Note:**  
-> This 7-component model is our course's structured synthesis combining established classical concepts (Russell & Norvig, AIMA) with modern LLM engineering frameworks (OpenAI). Neither AIMA nor OpenAI alone presents this exact seven-part list; rather, each component maps directly to its cited source foundation.
+> This 7-component model is our course's structured synthesis combining established classical concepts (Russell & Norvig, AIMA) with modern LLM engineering frameworks (OpenAI). OpenAI explicitly identifies *Model*, *Instructions*, and *Tools* as the core agent building blocks, while AIMA formalizes the *Environment*, *Percepts*, and *Actions* interaction loop. Goal/Task represents the driving input. Neither source presents this exact seven-part list alone; each component maps directly to its cited source foundation.
 
 ```mermaid
 flowchart TD
     subgraph AgentCore ["Core Agent Definition (OpenAI Foundation)"]
-        Goal["Goal / Task (OpenAI)"]
+        Goal["Goal / Task (Input Objective)"]
         Instr["Instructions / System Prompt (OpenAI)"]
         Model["Model / Reasoning Engine (OpenAI)"]
         Tools["Tools / Capabilities (OpenAI)"]
@@ -124,7 +125,7 @@ flowchart TD
 
 | Component | Primary Grounding | Role in LLM Agent Systems |
 | :--- | :--- | :--- |
-| **Goal / Task** | OpenAI | The objective, query, or desired end-state assigned to the agent. |
+| **Goal / Task** | External Input | The objective, query, or desired end-state assigned to the agent. |
 | **Model** | OpenAI | The language model providing reasoning, planning, and semantic evaluation. |
 | **Instructions** | OpenAI | System prompts, behavioral guardrails, and operational constraints. |
 | **Tools** | OpenAI | Structured capabilities available to the agent (e.g., database queries, REST APIs). *(Formal action spaces and schemas are detailed in Unit 1.3).* |
@@ -138,9 +139,9 @@ flowchart TD
 
 A fundamental operational property of model inference is:
 
-> **An individual model invocation does not automatically retain application state from previous invocations. Stateful behavior must be provided through the input/context or through mechanisms outside the model invocation.**
+> **An individual model invocation does not inherently retain application state from previous invocations; continuity must be provided through the context or an external state mechanism.**
 
-When you make an API call to an LLM, the model computes a forward pass over the supplied input tokens. It retains no memory of previous API calls.
+When an LLM processes a prompt, it computes a forward pass over the supplied input tokens. If an application requires continuity across multiple steps, that history must be explicitly managed outside the individual forward pass.
 
 ### The Percept History Requirement ($P^* \rightarrow A$)
 As formalized in AIMA, an agent operating across multiple steps cannot make rational decisions based solely on the latest observation $p_t$. It requires access to relevant information from the **percept history**:
@@ -186,9 +187,9 @@ flowchart TD
 | Architecture Layer | OpenAI SDK Implementation | Description & Visibility |
 | :--- | :--- | :--- |
 | **Model-Visible Context** | Input Messages / Context | The prompt context serialized and sent directly to the LLM (system prompt, user query, tool call messages, tool observations). |
-| **Local Application Context** | `RunContextWrapper` | Typed dependencies, configuration, and data (e.g., user IDs, DB connections) injected into tools and hooks. **Not sent to the LLM**, avoiding token waste and data leakage. |
+| **Local Application Context** | `RunContextWrapper` | Application-defined dependencies and data passed to the agent run and made available to tools, hooks, and other application code. The application context itself is not sent to the LLM. |
 | **Conversation State** | `Session` | Persistent multi-turn message history maintained across separate agent executions. |
-| **Execution Snapshot** | `RunState` | A JSON-serializable snapshot of an active run (capturing turn progress, usage, tool approvals, and interruptions) used to pause and resume runs. |
+| **Execution Snapshot** | `RunState` | Serializable snapshot of an agent run used to pause and resume execution, including run context, generated items/model responses, usage, and interruption/approval state. |
 | **Execution Controller** | `Runner` | The runtime harness managing the agent loop, tool execution, handoffs, and iteration limits (`Runner.run`). |
 
 *(Note: Orchestration frameworks like **LangGraph** similarly manage state via explicit graph schemas and persist execution snapshots across supersteps using **Checkpointers** for durability and human-in-the-loop pauses. Framework orchestration is explored in depth in Unit 1.9).*
@@ -200,14 +201,16 @@ flowchart TD
 To provide clear system boundaries when designing agent architectures, this course establishes a practical engineering distinction:
 
 > **Course Engineering Abstraction:**  
-> We distinguish two useful categories of state:  
-> 1. **Task / Domain State:** What the *model* needs to reason and solve the domain problem.  
-> 2. **Execution / Runtime State:** What the *runner / execution harness* needs to govern, execute, and safeguard the run.
+> For this course, we use two conceptual categories to reason about state:  
+> * **Task / Domain State:** Information required to understand and solve the domain task. *(Note: This is also referred to as the agent's **belief state** in classical AI literature (Russell & Norvig, AIMA), as it represents the agent's internal model of the world).*  
+> * **Execution / Runtime State:** Information required to manage, monitor, and control the execution of the run.  
+>  
+> *Note:* These categories are an engineering abstraction; real frameworks may represent, overlap, and combine them differently (e.g., how `RunContextWrapper` holds app dependencies while also tracking usage metadata).
 
 ```mermaid
 flowchart TD
     subgraph SystemState ["Course Architectural Mental Model"]
-        subgraph TaskState ["Task / Domain State (Model-Facing)"]
+        subgraph TaskState ["Task / Domain State (Agent Belief State - Model-Facing)"]
             T1["User Goal & Prompt"]
             T2["Message History (User, Assistant, Tool)"]
             T3["Domain Entities (Customer ID, Invoice Data)"]
@@ -226,7 +229,7 @@ flowchart TD
 
 ### Side-by-Side Comparison
 
-| Dimension | Task / Domain State | Execution / Runtime State |
+| Dimension | Task / Domain State (Belief State) | Execution / Runtime State |
 | :--- | :--- | :--- |
 | **Primary Consumer** | The Large Language Model (Reasoning Engine) | The Execution Harness / Agent Runner |
 | **Prompt Visibility** | Serialized directly into the model's context window | Kept outside the context window (harness metadata) |
@@ -236,7 +239,38 @@ flowchart TD
 
 ---
 
-## 7. State Evolution During an Agent Run
+## 7. Agent Belief State vs. Environment Truth
+
+A foundational hazard in production agent engineering is confusing what the agent **believes** with what is **actually true** in the external world:
+
+```mermaid
+flowchart LR
+    subgraph AgentMind ["Agent's Internal World"]
+        Belief["Agent Belief State<br/>(Context Window / Memory)<br/><i>e.g., 'Order ORD-9921 is PENDING'</i>"]
+    end
+
+    subgraph RealWorld ["External Reality (Source of Truth)"]
+        Truth["Environment State<br/>(Database / Production API)<br/><i>e.g., 'Order ORD-9921 was CANCELLED by user 1m ago'</i>"]
+    end
+
+    Belief -.->|May Diverge / Become Stale| Truth
+    Truth -->|Grounded via Precondition Check| Belief
+```
+
+> [!IMPORTANT]
+> **Cardinal Grounding Rule:**  
+> *"Agent state is an internal belief about the world. The external environment is the ultimate source of truth. These two representations can and will diverge over time. An agent must never execute destructive or irreversible mutations based solely on stale internal beliefs."*
+
+### Why Belief and Truth Diverge:
+1. **Asynchronous Concurrent Mutations:** Another user, cron job, or external service may mutate database records after the agent's initial retrieval tool call.
+2. **Partial Failures & Network Timeouts:** An API call may succeed on the server while the network timeout makes the agent believe the call failed (or vice versa).
+3. **Model Hallucination:** The model may assume a state transition occurred without issuing the corresponding tool invocation.
+
+*(Note: We formalize the exact engineering pattern for resolving this divergence — **Precondition $\rightarrow$ Action $\rightarrow$ Postcondition Verification** — in Unit 1.6).*
+
+---
+
+## 8. State Evolution During an Agent Run
 
 Let us trace how both state layers evolve synchronously through a single turn in a modern `Agent → Runner` loop:
 
@@ -286,7 +320,7 @@ sequenceDiagram
 
 ---
 
-## 8. Summary & Scope Boundaries
+## 9. Summary & Scope Boundaries
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
